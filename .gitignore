@@ -1,0 +1,6 @@
+auth.json
+hosts.json
+admins.json
+node_modules
+package-lock.json
+*.log

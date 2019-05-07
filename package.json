@@ -1,0 +1,13 @@
+{
+    "name": "lunamp-yo1frenchbot",
+    "version": "1.0.0",
+    "description": "",
+    "main": "bot.js",
+    "author": "yo1frenchtoast (Yoan TANGUY)",
+    "dependencies": {
+        "discord.js": "^11.4.2",
+        "shelljs": "^0.8.3",
+        "sync-request": "^6.1.0",
+        "winston": "^3.2.1"
+    }
+}
