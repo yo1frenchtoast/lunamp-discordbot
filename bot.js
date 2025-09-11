@@ -79,19 +79,22 @@ bot.login(auth.token);
  * OBJECTS
  */
 
-function Server(address, port) {
-    this.address = address;
-    this.port = port;
-
-    this._url = 'http://'+address+':'+port+'/';
-    this._getInfos = function () { 
-        request('GET', this._url).done(function (res) {
-            let body = res.getBody();
-            logger.debug('Received: '+body);
-            this.infos = JSON.parse(body);
-        });
+class Server {
+    constructor (address, port) {
+        this.address = address;
+        this.port = port;
     }
-    this._getInfos();
+
+    infos () {
+        var url = 'http://'+this.address+':'+this.port+'/';
+        var data = {};
+        request('GET', url).done(function (response) {
+            var body = response.getBody();
+            logger.debug('Received: '+body);
+            data = JSON.parse(body);
+        });
+        return data;
+    }
 }
 
 /**
@@ -133,8 +136,10 @@ function handleServerCommand(args, author) {
 
     // Get infos from each http servers
     var servers = [];
-    for (var server of hosts) {
-        servers.push(new Server(server.address, server.port).infos);
+    for (var host of hosts) {
+        var server = new Server(host.address, host.port);
+        var infos = server.infos();
+        servers.push(infos);
     }
 
     // !server print
