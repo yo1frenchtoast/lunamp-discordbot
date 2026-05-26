@@ -9,7 +9,7 @@
 
 const { createLogger, format, transports } = require('winston');
 const Discord = require('discord.js');
-const request = require('then-request');
+const net     = require('net');
 const shell   = require('shelljs');
 // Configuration files
 const auth    = require('./auth.json');
@@ -49,7 +49,7 @@ bot.on('typingStart', (channel, user) => {
 });
 
 // 'Message' handler
-bot.on('message', msg => {
+bot.on('message', async msg => {
     // ignore non-command messages
     if (msg.content.substring(0,1) != '!') {
         return;
@@ -62,7 +62,7 @@ bot.on('message', msg => {
     var args = msg.content.split(' ');
     var cmd = args[0];
 
-    var reply = handleCommand(cmd, args, author);
+    var reply = await handleCommand(cmd, args, author);
     logger.info('Replying: ' + reply);
     msg.channel.send(reply);
 });
@@ -86,14 +86,45 @@ class Server {
     }
 
     infos () {
-        var url = 'http://'+this.address+':'+this.port+'/';
-        var data = {};
-        request('GET', url).done(function (response) {
-            var body = response.getBody();
-            logger.debug('Received: '+body);
-            data = JSON.parse(body);
+        return new Promise((resolve, reject) => {
+            const socket = new net.Socket();
+            let rawData = '';
+
+            socket.connect(this.port, this.address, () => {
+                socket.write(
+                    `GET / HTTP/1.1\r\nHost: ${this.address}:${this.port}\r\nConnection: close\r\n\r\n`
+                );
+            });
+
+            socket.on('data', chunk => {
+                rawData += chunk.toString();
+            });
+
+            socket.on('close', () => {
+                // Handle servers that send bare \n instead of \r\n (HPE_CR_EXPECTED)
+                const sep = rawData.includes('\r\n\r\n') ? '\r\n\r\n' : '\n\n';
+                const bodyStart = rawData.indexOf(sep);
+                if (bodyStart === -1) {
+                    return reject(new Error('Invalid HTTP response: no header/body separator found'));
+                }
+                const body = rawData.slice(bodyStart + sep.length).trim();
+                try {
+                    const parsed = JSON.parse(body);
+                    resolve(Array.isArray(parsed) ? parsed[0] : parsed);
+                } catch (e) {
+                    reject(new Error('Failed to parse server response as JSON: ' + e.message));
+                }
+            });
+
+            socket.on('error', err => {
+                reject(new Error(`Connection to ${this.address}:${this.port} failed: ${err.message}`));
+            });
+
+            socket.setTimeout(5000, () => {
+                socket.destroy();
+                reject(new Error(`Connection to ${this.address}:${this.port} timed out`));
+            });
         });
-        return data;
     }
 }
 
@@ -101,7 +132,7 @@ class Server {
  * FUNCTIONS
  */
 
-function handleCommand(cmd, args, author) {
+async function handleCommand(cmd, args, author) {
     // !help
     if (cmd === '!help') {
         return(`***Available commands:***\`\`\`
@@ -117,13 +148,13 @@ function handleCommand(cmd, args, author) {
 
     // !server
     if (cmd === '!server') {
-        return handleServerCommand(args, author);
+        return await handleServerCommand(args, author);
     }
 
     return('Unknown command, type !help for more informations');
 }
 
-function handleServerCommand(args, author) {
+async function handleServerCommand(args, author) {
     // !server help
     if (!args[1] || args[1] === 'help') {
         return (`**Hello** @${author} !
@@ -138,8 +169,13 @@ function handleServerCommand(args, author) {
     var servers = [];
     for (var host of hosts) {
         var server = new Server(host.address, host.port);
-        var infos = server.infos();
-        servers.push(infos);
+        try {
+            var infos = await server.infos();
+            servers.push(infos);
+        } catch (err) {
+            logger.error('Failed to fetch infos from ' + host.address + ':' + host.port + ' — ' + err.message);
+            servers.push(null);
+        }
     }
 
     // !server print
@@ -148,29 +184,60 @@ function handleServerCommand(args, author) {
         // Iterate on infos
         for (var i = 0; i < servers.length; i++) {
             logger.debug(JSON.stringify(servers[i]));
-            message.concat(`\`\`\`${i} > Server name: ${servers[i].GeneralSettings.ServerName}
-- Server port: ${hosts[i].port}\n\`\`\``);
+            message += `\`\`\`${i} > Server name: ${servers[i].GeneralSettings.ServerName}
+- Server port: ${hosts[i].port}\n\`\`\``;
         }
         return message;
     }
 
     // !server dump
     if (args[1] === 'dump') {
-        return(JSON.stringify(servers[args[2]], null, 4));
+        if (!args[2] || !servers[args[2]]) {
+            return(`Please specify a valid server ID. Use !server print to list servers.`);
+        }
+        const s = servers[args[2]];
+        const gs = s.GeneralSettings;
+        const cs = s.CurrentState;
+        const vessels = cs.CurrentVessels || [];
+        const vesselTypes = vessels.reduce((acc, v) => {
+            acc[v.Type] = (acc[v.Type] || 0) + 1;
+            return acc;
+        }, {});
+        const vesselSummary = Object.entries(vesselTypes).map(([t, n]) => `${n}x ${t}`).join(', ') || 'none';
+        const startTime = new Date(cs.StartTime).toUTCString();
+        const memMB = (cs.BytesUsed / 1024 / 1024).toFixed(1);
+
+        return `\`\`\`
+=== ${gs.ServerName} ===
+Description : ${gs.Description}
+Game mode   : ${gs.GameMode} (${gs.GameDifficulty})
+Max players : ${gs.MaxPlayers}
+Password    : ${gs.HasPassword ? 'Yes' : 'No'}
+Cheats      : ${gs.Cheats ? 'Enabled' : 'Disabled'}
+Port        : ${gs.ConsoleIdentifier} / ${s.ServerConnectionSettings.Port}
+Terrain     : ${gs.TerrainQuality}
+
+--- Current state ---
+Server start : ${startTime}
+Players      : ${cs.CurrentPlayers.length} / ${gs.MaxPlayers}
+Vessels      : ${vessels.length} total (${vesselSummary})
+Memory used  : ${memMB} MB
+Warp mode    : ${s.WarpSettings.WarpMode}
+\`\`\``;
     }
 
     // !server players
     if (args[1] === 'players') {
         var message = '';
-        for (var i = 0; i < infos.length; i++) {
-            var server_name = infos[i].server_name;
-            var players = infos[i].players;
-            var player_count = infos[i].player_count;
-            var max_players = infos[i].max_players;
+        for (var i = 0; i < servers.length; i++) {
+            var server_name = servers[i].server_name;
+            var players = servers[i].players;
+            var player_count = servers[i].player_count;
+            var max_players = servers[i].max_players;
             var lastPlayerActivity = new Date(servers[i].lastPlayerActivity * 1000).toISOString().substr(11, 8);
-            message.concat(`*Currently **${player_count}/${max_players}** players connected to server* ${server_name}
+            message += `*Currently **${player_count}/${max_players}** players connected to server* ${server_name}
     *- Last activity:* ${lastPlayerActivity} ago
-    *- Players list:* ${players.toString()}\n`);
+    *- Players list:* ${players.toString()}\n`;
         }
         return message;
     }
