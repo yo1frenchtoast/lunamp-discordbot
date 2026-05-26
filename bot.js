@@ -159,10 +159,11 @@ async function handleServerCommand(args, author) {
     if (!args[1] || args[1] === 'help') {
         return (`**Hello** @${author} !
 ***Available commands:***\`\`\`
-- !server help      => print this help
-- !server print     => print infos about all servers
-- !server dump <id> => dump all informations about specified server
-- !server players   => list players currently on servers\`\`\``);
+- !server help         => print this help
+- !server print        => print infos about all servers
+- !server dump <id>    => show summary of specified server
+- !server vessels <id> => list all vessels on specified server
+- !server players      => list players currently on servers\`\`\``);
     }
 
     // Get infos from each http servers
@@ -224,6 +225,46 @@ Vessels      : ${vessels.length} total (${vesselSummary})
 Memory used  : ${memMB} MB
 Warp mode    : ${s.WarpSettings.WarpMode}
 \`\`\``;
+    }
+
+    // !server vessels
+    if (args[1] === 'vessels') {
+        if (!args[2] || !servers[args[2]]) {
+            return(`Please specify a valid server ID. Use !server print to list servers.`);
+        }
+        const s = servers[args[2]];
+        const vessels = s.CurrentState.CurrentVessels || [];
+        if (vessels.length === 0) {
+            return(`No vessels found on server **${s.GeneralSettings.ServerName}**.`);
+        }
+
+        const BODY_NAMES = { 0: 'Sun', 1: 'Kerbin', 2: 'Mun', 3: 'Minmus', 4: 'Moho', 5: 'Eve', 6: 'Duna', 7: 'Dres', 8: 'Jool', 9: 'Eeloo' };
+        const TYPE_ICONS = { Ship: '🚀', Plane: '✈️', Relay: '📡', Probe: '🛰️', Lander: '🛬', Flag: '🚩', SpaceObject: '☄️', Debris: '💥' };
+
+        // Group by type, sort groups alphabetically
+        const grouped = vessels.reduce((acc, v) => {
+            (acc[v.Type] = acc[v.Type] || []).push(v);
+            return acc;
+        }, {});
+
+        let message = `**${s.GeneralSettings.ServerName}** — ${vessels.length} vessel(s)\n\`\`\``;
+        for (const type of Object.keys(grouped).sort()) {
+            message += `\n${type}s (${grouped[type].length})\n`;
+            for (const v of grouped[type]) {
+                const body = BODY_NAMES[v.ReferenceBody] ?? `Body ${v.ReferenceBody}`;
+                const alt = v.Alt >= 1e6
+                    ? `${(v.Alt / 1e6).toFixed(1)}Mm`
+                    : `${(v.Alt / 1e3).toFixed(1)}km`;
+                message += `  ${v.Name.padEnd(28)} @ ${body.padEnd(8)} alt ${alt}\n`;
+            }
+        }
+        message += '```';
+
+        // Truncate if somehow still too long
+        if (message.length > 3900) {
+            message = message.substring(0, 3880) + '\n... (truncated)```';
+        }
+        return message;
     }
 
     // !server players
